@@ -1,0 +1,13 @@
+{
+  "model": "YOUR_CHAT_MODEL_ID",
+  "model_api": {
+    "provider": "openai_compatible",
+    "base_url": "https://your-gateway.example/v1",
+    "api_key_env": "REVIEW_MODEL_API_KEY",
+    "discover_models": true,
+    "trust_env": false,
+    "temperature": 0.3,
+    "timeout_seconds": 240,
+    "transport_retries": 1
+  }
+}

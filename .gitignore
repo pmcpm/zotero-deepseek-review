@@ -1,0 +1,45 @@
+# Credentials and machine-local settings
+.env
+.env.*
+!.env.example
+*.local.json
+*api-keys*
+*credentials*
+secrets/
+profiles/
+**/codex-literature-bridge/config.json
+**/codex-literature-bridge/state.json
+
+# Research task data and documents belong outside this source repository
+/tasks/
+/runs/
+/private/
+*.pdf
+*.docx
+*.doc
+*.ris
+*.bib
+*.nbib
+*.log
+**/raw.json
+**/body.txt
+**/messages.json
+**/provider-request.json
+**/task.json
+**/evidence.json
+**/state.json
+**/selected.json
+
+# Generated artifacts and local tools
+/dist/
+/build/
+*.xpi
+*.zip
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,4 @@
+{
+  "model": "deepseek-v4-flash",
+  "model_api": {"provider": "cstcloud"}
+}

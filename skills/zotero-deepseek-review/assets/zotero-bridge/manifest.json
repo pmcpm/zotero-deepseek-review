@@ -1,0 +1,13 @@
+{
+  "manifest_version": 2,
+  "name": "Codex Literature Bridge",
+  "version": "0.2.1",
+  "description": "Task-scoped Zotero library and native Word citation workflow",
+  "author": "Local academic workflow",
+  "applications": {"zotero": {
+    "id": "codex-literature-bridge@codex.local",
+    "update_url": "https://127.0.0.1/codex-literature-bridge/updates.json",
+    "strict_min_version": "9.0.6",
+    "strict_max_version": "9.0.*"
+  }}
+}

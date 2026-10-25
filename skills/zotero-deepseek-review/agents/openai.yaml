@@ -1,0 +1,6 @@
+interface:
+  display_name: "文献调研与 Zotero 写作"
+  short_description: "核验文献，由可配置模型撰写综述，交付原生 Zotero 引文 Word"
+  default_prompt: "使用 $zotero-deepseek-review 为我的研究整理文献、交由写作模型撰写相关工作，并生成带 Zotero 原生引文的 Word 文档；模型默认使用 CSTCloud DeepSeek。"
+policy:
+  allow_implicit_invocation: true
