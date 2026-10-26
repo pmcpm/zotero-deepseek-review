@@ -24,13 +24,16 @@ def prepare(root,profile=None):
         citation={'citationItems':[{'uris':[by_id[rid]['uri']]} for rid in ids],'properties':{}}
         return '<span class="citation" data-citation="'+html.escape(encode(citation),quote=True)+'">引用</span>'
     titles={s['title'] for s in task['outline']}
+    levels={s['title']:int(s.get('level',2)) for s in task['outline']}
+    if any(level not in range(1,10) for level in levels.values()):raise ValueError('Heading level must be between 1 and 9')
+    main=[task['document_heading']] if task.get('document_heading') else ['相关工作','文献综述']
     paras=[]
     for line in body.splitlines():
         if not line.strip():continue
         # Escape source prose; replace only the model's stable reference markers.
         escaped=html.escape(line)
         converted=re.sub(r'(?:\[\[R\d{3,}\]\])+',marker,escaped)
-        tag='h2' if line.strip() in titles else 'p'
+        tag='h'+str(levels[line.strip()]) if line.strip() in titles else ('h1' if line.strip() in main else 'p')
         paras.append('<'+tag+'>'+converted+'</'+tag+'>')
     note='<div data-schema-version="2" data-citation-items="'+html.escape(encode(metadata),quote=True)+'">'+''.join(paras)+'</div>'
     request={'op':'createNote','taskID':task['task_id'],'requestID':'note_'+digest({'task_id':task['task_id'],'html':note}),'html':note}
@@ -39,7 +42,7 @@ def prepare(root,profile=None):
     result=bridge.call(request)
     (plan/'create-note.response.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf8')
     if result.get('state')!='completed' or result.get('result',{}).get('ok') is not True:raise ValueError('Create citation note failed or outcome uncertain; inspect saved request status')
-    out={'task_id':task['task_id'],'note_key':result['result']['key'],'body_path':selected['body_path'],'body_sha256':selected['body_sha256'],'task_sha256':digest(task),'evidence_sha256':digest(cards),'note_html_sha256':digest(note),'output_docx':task['output_docx'],'headings':list(titles),'reference_ids':re.findall(r'\[\[(R\d{3,})\]\]',body),'citation_clusters':len(re.findall(r'(?:\[\[R\d{3,}\]\])+',body))}
+    out={'task_id':task['task_id'],'note_key':result['result']['key'],'body_path':selected['body_path'],'body_sha256':selected['body_sha256'],'task_sha256':digest(task),'evidence_sha256':digest(cards),'note_html_sha256':digest(note),'output_docx':task['output_docx'],'headings':list(titles),'heading_levels':levels,'main_headings':main,'reference_ids':re.findall(r'\[\[(R\d{3,})\]\]',body),'citation_clusters':len(re.findall(r'(?:\[\[R\d{3,}\]\])+',body))}
     (plan/'note-plan.json').write_text(json.dumps(out,ensure_ascii=False,indent=2),encoding='utf8')
     return out
 if __name__=='__main__':

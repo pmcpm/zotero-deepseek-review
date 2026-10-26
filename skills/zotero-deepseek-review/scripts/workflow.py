@@ -61,7 +61,7 @@ def init_task(root: Path, supplied: dict | None = None) -> dict:
     if (root / "task.json").exists():
         raise ValueError("Task already exists; edit its configuration and resume")
     task = {
-        "schema_version": 1, "task_id": uuid.uuid4().hex, "title": None,
+        "schema_version": 2, "task_id": uuid.uuid4().hex, "title": None,
         "scope": "related_work", "audience": None, "context": "",
         "word_limit": None, "word_count_basis": "word", "reference_target": None,
         "language_ratio": None, "citation_style": None, "hide_doi": None, "bilingual": None,
@@ -70,6 +70,7 @@ def init_task(root: Path, supplied: dict | None = None) -> dict:
         "supplement_dir": None, "output_docx": None, "outline": [], "author_materials": [],
         "forbidden_expressions": FORBIDDEN.copy(), "model": "deepseek-v4-flash",
         "model_api": {"provider": "cstcloud"}, "max_revisions": 2,
+        "execution_policy": {"allow_subagents": None, "revision_mode": None},
         "formatting": {"paper": "A4", "margin_cm": 2.54, "body_font": "宋体", "body_pt": 12,
                        "heading_font": "黑体", "line_spacing": 1.5, "first_line_characters": 2, "color": "000000"},
     }
@@ -93,14 +94,52 @@ def check_task(task: dict) -> dict:
             issues.append(str(error))
     if task.get("word_limit") is not None and (type(task["word_limit"]) is not int or task["word_limit"] <= 0):
         issues.append("word_limit must be a positive integer")
-    if type(task.get("max_revisions", 2)) is not int or task.get("max_revisions", 2) not in (0, 1, 2):
-        issues.append("max_revisions must be 0, 1 or 2; additional calls require a new user instruction")
+    schema = task.get("schema_version", 1)
+    if type(schema) is not int or schema not in (1, 2):
+        issues.append("schema_version must be 1 or 2")
+    policy = task.get("execution_policy")
+    if policy is not None and not isinstance(policy, dict):
+        issues.append("execution_policy must be an object")
+    else:
+        policy = policy or {}
+        if schema == 2:
+            for name in ("allow_subagents", "revision_mode"):
+                if policy.get(name) is None:
+                    missing.append("execution_policy." + name)
+        allowed = policy.get("allow_subagents")
+        if allowed is not None and type(allowed) is not bool:
+            issues.append("execution_policy.allow_subagents must be a boolean")
+        mode = policy.get("revision_mode")
+        if mode is not None and mode not in ("bounded", "until_pass"):
+            issues.append("execution_policy.revision_mode must be bounded or until_pass")
+        if mode == "until_pass":
+            if task.get("max_revisions", 2) is not None:
+                issues.append("until_pass requires max_revisions=null; a finite limit cannot be silently overridden")
+        elif mode == "bounded" or (schema == 1 and mode is None):
+            limit = task.get("max_revisions", 2)
+            if type(limit) is not int or limit < 0:
+                issues.append("bounded mode requires a non-negative integer max_revisions")
     for name in ("hide_doi", "bilingual"):
         if task.get(name) is not None and type(task[name]) is not bool:
             issues.append(name + " must be a boolean")
     if task.get("word_count_basis", "word") not in ("word", "characters_without_whitespace"):
         issues.append("Unsupported word_count_basis")
     return {"ready": not missing and not issues, "missing": missing, "issues": issues}
+
+
+def execution_policy(task: dict) -> dict:
+    """Resolve legacy defaults without treating absent authorization as consent."""
+    policy = task.get("execution_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    return {"allow_subagents": policy.get("allow_subagents") is True,
+            "revision_mode": policy.get("revision_mode") or "bounded"}
+
+
+def revision_limit(task: dict) -> int | None:
+    """None means the user explicitly selected content revision until acceptance."""
+    if execution_policy(task)["revision_mode"] == "until_pass":
+        return None
+    return task.get("max_revisions", 2)
 
 
 def normalize_title(text: str) -> str:
@@ -306,14 +345,17 @@ def audit_body(body: str, task: dict, cards: list[dict], count: dict | None = No
 
 
 def next_attempt(root: Path) -> int:
-    return len(list((root / "writing").glob("attempt-*"))) if (root / "writing").exists() else 0
+    indices = [int(p.name.split("-")[1]) for p in (root / "writing").glob("attempt-*")
+               if p.is_dir() and re.fullmatch(r"attempt-\d+", p.name)]
+    return max(indices, default=-1) + 1
 
 
 def latest_attempt(root: Path) -> Path:
-    dirs = sorted((root / "writing").glob("attempt-*"))
+    dirs = [p for p in (root / "writing").glob("attempt-*")
+            if p.is_dir() and re.fullmatch(r"attempt-\d+", p.name)]
     if not dirs:
         raise ValueError("No model response yet")
-    return dirs[-1]
+    return max(dirs, key=lambda p: int(p.name.split("-")[1]))
 
 
 def write_draft(root: Path, mock: Path | None = None, correction: dict | None = None) -> dict:
@@ -341,7 +383,8 @@ def write_draft(root: Path, mock: Path | None = None, correction: dict | None = 
     models = client.models(root / "writing/discovery")
     while True:
         index = next_attempt(root)
-        if index > task.get("max_revisions", 2):
+        limit = revision_limit(task)
+        if limit is not None and index > limit:
             state = {"phase": "needs_user_decision", "reason": "revision_limit", "updated_at": now()}
             save(root / "state.json", state)
             return state

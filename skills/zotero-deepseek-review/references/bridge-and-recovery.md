@@ -79,10 +79,12 @@ status 请求为 `{ "op":"status", "requestID":"原请求ID" }`，仅查询。�
 Word 用法：
 
 ```powershell
-& scripts/word_document.ps1 -TaskDir <任务目录> -PythonPath <bundled-python.exe> -StyleID <已安装任务CSL的完整ID> [-ProfilePath <profile路径>] [-TemplatePath <空白格式模板>]
+& scripts/word_document.ps1 -TaskDir <任务目录> -PythonPath <bundled-python.exe> -StyleID <已安装任务CSL的完整ID> [-ProfilePath <profile路径>] [-TemplatePath <空白格式模板>] [-StylePath <实际任务CSL路径>]
 ```
 
-模板应只提供格式，保持正文为空且无引文域；已有稿件的局部编辑另行限定范围。脚本初始化独立会话、设置 Field 和即时更新，创建原生笔记引文、生成列表、保存重开并刷新。其输出为目标 DOCX、任务内的 word 请求/响应、document-audit.json 和 preview.pdf。PDF 转为 PNG 后逐页核验，正文一致性和原生域检查通过后交付。
+实际 CSL 从任务目录中按 `StyleID` 自动匹配；找不到时显式传入 `-StylePath`，且该文件的 CSL ID 必须与 `StyleID` 相同。模板应只提供格式，保持正文为空且无引文域；已有稿件的局部编辑另行限定范围。脚本初始化独立会话、设置 Field 和即时更新，创建原生笔记引文、生成列表，完成正文格式规范化后再执行最终原生 Refresh，并保存重开核验。其输出为目标 DOCX、任务内的 word 请求/响应、document-audit.json 和 preview.pdf。PDF 转为 PNG 后逐页核验，正文一致性、有效字体与引文结果格式及原生域检查通过后交付。
+
+普通 `refreshDocument` 不保证重写已经受损的字符格式：Zotero 9.0.6 在 `properties.formattedCitation` 与新渲染相同时可保留 Word 现有格式。需重写格式时，正文规范化后、最终 Refresh 前使用 `citation_cache.py` 清除任务自有文档引文 JSON 的该派生缓存；保留 `citationID`、`uris`、`plainCitation` 与其他字段，再由原生刷新按 CSL 重写。先检查全部目标引文，`dontUpdate=true` 表示手工保留文字，必须拒绝覆盖。清缓存不绕过文档范围登记，也不授权操作用户要求保持不动的论文。
 
 后台只操作任务自有 Word 实例和明确文档，不接管鼠标、键盘、剪贴板或用户窗口。发现实例已有文档时退出该操作并保留用户文档。扩展临时抑制本次命令结束时的文档激活，随后恢复原标志，保持用户后续插件行为。需要正常对话框时向用户说明并等待其处理。
 

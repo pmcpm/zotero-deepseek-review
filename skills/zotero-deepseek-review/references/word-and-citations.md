@@ -8,13 +8,17 @@
 
 ## 文档制作
 
-使用 `scripts/word_document.ps1 -TaskDir ... -PythonPath ... -StyleID ...` 创建独立 Word 实例和任务自有文档，可选 `-ProfilePath` 和 `-TemplatePath`。模板应为空白格式模板；已有输出文件会被保护，重新制作时登记新的目标路径。脚本先通过 `workflow.load_selected()` 和实际 Zotero 读回数据检查已审查正文，再进行文档操作。新文档经 Zotero 集成接口初始化独立 sessionID、styleID、locale 和 Field 类型；即时引文更新保持开启。引用采用本机 Zotero 条目 URI，桥接调用原生笔记转换及引文登记流程，文末列表由同一插件引擎生成。
+使用 `scripts/word_document.ps1 -TaskDir ... -PythonPath ... -StyleID ...` 创建独立 Word 实例和任务自有文档，可选 `-ProfilePath`、`-TemplatePath` 和 `-StylePath`。实际 CSL 默认从任务目录中按 `StyleID` 匹配查找；找不到时须明确提供 `-StylePath`，显式路径同样校验 CSL ID，不以文件名代替匹配。模板应为空白格式模板；已有输出文件会被保护，重新制作时登记新的目标路径。脚本先通过 `workflow.load_selected()` 和实际 Zotero 读回数据检查已审查正文，再进行文档操作。新文档经 Zotero 集成接口初始化独立 sessionID、styleID、locale 和 Field 类型；即时引文更新保持开启。引用采用本机 Zotero 条目 URI，桥接调用原生笔记转换及引文登记流程，文末列表由同一插件引擎生成。
 
 仅对任务文档进行 Range 定位和对象模型操作，避免 Activate 用户窗口。结束时关闭并退出本任务创建的文档与实例；检测到已有用户文档时先明确实例归属。禁止 Computer Use、SendKeys、鼠标键盘模拟和剪贴板接管。接口遇到需要用户操作的正常对话框时，说明对话框用途并等待用户处理。
 
-用户模板优先；缺省为 A4、页边距 2.54 厘米、正文宋体小四、标题黑体、1.5 倍行距、首行缩进 2 字符。设置真实标题、正文和参考文献样式，统一文字为黑色，并清理会覆盖颜色的主题/直接格式。保留引用上标或作者年份格式，按选择的 CSL 处理引用排序和组合。
+用户模板优先；缺省为 A4、页边距 2.54 厘米、正文宋体小四、标题黑体、1.5 倍行距、首行缩进 2 字符。从模板正文样式解析期望的中西文字体及字号，不用任务缺省值覆盖模板。设置真实标题、正文和参考文献样式；清理正文中覆盖期望字体、字号和黑色文字的直接格式及主题字体覆盖，保留必要的强调格式与原生域。仅给段落设置 Normal 样式不足以清除 Word 导入的逐字符字体覆盖。
 
-可在 `formatting.latin_font` 指定拉丁字母字体；默认沿用正文宋体。模板具有指定参考文献样式时，在 `formatting.reference_style` 记录样式名称；其他模板保留插件生成的原生列表样式。缺省参考文献悬挂缩进、左对齐，并在最终 Refresh 后复核。
+无模板时可在 `formatting.latin_font` 指定拉丁字母字体，默认沿用正文宋体；有模板时保留其正文中西文字体配置。模板具有指定参考文献样式时，在 `formatting.reference_style` 记录样式名称；其他模板保留插件生成的原生列表样式。缺省参考文献悬挂缩进、左对齐，并在最终 Refresh 后复核。
+
+正文格式规范化由 `word_formatting.ps1` 提供共用处理及 Word COM 快照。正文排版和可能影响引文的字符格式处理必须在最终 Zotero 原生 Refresh 之前完成；Refresh 后不再对整段或全文执行会重置引文结果的格式操作。上标、作者年份和组合引用由实际任务 CSL 与 Zotero 原生引擎生成，禁止手动统一设置 Superscript 来掩盖渲染问题。保存、关闭、重开后再 Refresh，核查最终保存版本。
+
+Zotero 9.0.6 的普通 Refresh 执行重新生成，但字段 JSON 的 `properties.formattedCitation` 与新渲染内容相同时，可能保留 Word 中已经丢失的上标。任务自有文档在正文格式规范化之后、需重写引文格式的最终 Refresh 之前，通过 `citation_cache.py` 仅清除该派生缓存，再由原生 Refresh 按实际 CSL 写回格式；保留 `citationID`、`uris`、`plainCitation` 及其他元数据。清除前先检查全部目标字段，遇到 `dontUpdate=true` 必须拒绝覆盖其手工保留文字。该处理不用于未纳入任务的当前论文，不手动改引文可见文字或 Superscript。
 
 ## CSL 与 DOI
 
@@ -34,13 +38,13 @@ DOI 显示选项独立于普通 URL 策略。英文附加著录使用相同策�
 
 ## 交付验收与后续编辑
 
-核对稳定 ID 到 Zotero URI 的映射和引文数量。确认 `ADDIN ZOTERO_ITEM CSL_CITATION` 及 `ADDIN ZOTERO_BIBL` 域存在，重复引用指向同一文献，文末列表条数与实际引用一致。通过正式 Refresh 核对题录、文内与文末样式；保存、关闭、重开后再检查。
+核对稳定 ID 到 Zotero URI 的映射和引文数量。确认 `ADDIN ZOTERO_ITEM CSL_CITATION` 及 `ADDIN ZOTERO_BIBL` 域存在，重复引用指向同一文献，文末列表条数与实际引用一致。逐段检查有效中西文字体与字号，逐字段检查可见引文结果的格式；不可将域代码或文末编号误当文内引文。GB/T 上标样式要求各处引文结果均为上标，APA 等基线样式应保持正常基线，期望值以实际 CSL 为准。仅存在原生域、即时更新偏好或正确编号不构成格式验收通过。
 
 逐条检查 URL：正式出版物的中文及英文著录省略普通链接和引用日期；网络资源的 URL 与所需发布日期、引用日期齐全。保留例外依据保存在证据卡，避免把出版社落地页或在线 PDF 当作 EB/OL。改变 url_policy 或逐条 URL 例外后，重新渲染英文缓存再验收。
 
-用 `scripts/audit_docx.py <文档.docx> --output <核查.json> --expected-citations <组合引用处数> --style-id <任务样式ID>` 独立检查已保存 DOCX 的原生域、即时更新偏好、会话、引用数量和连接符；需要隐藏 DOI 时加 `--hide-doi`。此检查与逐页图像、题录和证据核对共同完成验收。
+用 `scripts/audit_docx.py <文档.docx> --output <核查.json> --expected-citations <组合引用处数> --style-id <任务样式ID> --task <task.json> --style-path <实际任务.csl> --word-report <Word COM 快照.json>` 检查已保存 DOCX。交付链传入任务、实际 CSL 和 COM 快照，以 Word COM 与 OOXML 双重核对原生域、即时更新、正文有效字体与字号、逐引文结果的上标或基线、引用数量和连接符，并报告具体段落或字段。需要隐藏 DOI 时加 `--hide-doi`。旧调用方式保留兼容，但缺少格式期望和实际结果的旧检查不替代交付格式验收。此检查与逐页图像、题录和证据核对共同完成验收。
 
-在独立副本验证前文新增文献后的重排、重复引用沿用编号、删除后列表缩减及重开刷新。记录插入后即时更新和 Refresh 后更新的结果。用户继续通过 Word Zotero Add/Edit Citation 修改引用；引用及文末列表保持链接状态，元数据更正在 Zotero 中进行。
+在全新测试文档验证插入、排版、Refresh、保存重开各阶段的字体和引文结果，并覆盖前文新增文献后的重排、重复引用沿用编号、删除后列表缩减及重开刷新。GB/T 上标和 APA 基线分别测试；故意混入字体及移除末段上标的文档应被验收拒绝。记录插入后即时更新和 Refresh 后更新的实际结果。用户明确要求现有文档不动时，测试不得对该文档插入、刷新或保存。用户继续通过 Word Zotero Add/Edit Citation 修改引用；引用及文末列表保持链接状态，元数据更正在 Zotero 中进行。
 
 按 documents skill 渲染并逐页检查。优先使用其标准 renderer；本机缺少 LibreOffice 时诊断该原因，使用 Word 原生 ExportAsFixedFormat 导出 PDF，再用 Poppler 生成 PNG 逐页查看。确认文字、上标、缩进、分页和文末条目完整可见。PDF/PNG 用于核验，交付以用户要求的 `.docx` 为主。
 

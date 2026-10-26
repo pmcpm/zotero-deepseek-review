@@ -10,7 +10,7 @@
 - `metadata-audit TASK --readback zotero-readback.json` compares current expected metadata with Zotero JSON, preserving author order, article numbers and organization-author structures. It also checks the target collection and any declared attachment parent keys. A successful post-import audit bound to current metadata is required before writing.
 - `supplements TASK` checks expected local files and SHA256, records receipt/change, and reports pending work. Receipt never implies evidence verification. After reading the correct full text, Codex marks the matching supplement `fulltext_verified` and updates its evidence card. A changed PDF returns to review. Pending supplements block model writing while other search work can continue.
 - `prompt TASK` saves a readable prompt preview and message JSON without calling the model.
-- `write TASK` checks current models through the configured adapter (CSTCloud by default), calls the configured model and mechanically audits each response. At most the initial call plus two model revisions are permitted. Mechanical failures are returned to the model with their evidence context. A mechanical pass waits for an exact count and Codex semantic review.
+- `write TASK` checks current models through the configured adapter (CSTCloud by default), calls the configured model and mechanically audits each response. The confirmed execution policy controls revision limits: `until_pass` has no content-revision count limit; `bounded` permits the initial call plus `max_revisions` revisions. Mechanical failures are returned to the model with their evidence context. A mechanical pass waits for an exact count and Codex semantic review.
 - `audit TASK --word-count count.json` performs another read-only mechanical audit. `review TASK --semantic-review review.json --word-count count.json` returns semantic problems to the model or creates `selected.json` after all checks pass. After a revision, repeat semantic review against the new body hash.
 - `--mock-responses responses.json` on `write` and `review` accepts an array of strings or OpenAI-shaped responses for isolated tests. A mock selection always has `output_document_allowed=false`.
 
@@ -22,11 +22,13 @@ Each `writing/attempt-NN/` contains immutable `task.json` and `evidence.json` sn
 
 Required confirmation fields are `title`, `audience`, `word_limit`, `reference_target`, `language_ratio`, `citation_style`, `hide_doi`, `bilingual`, `date_range`, `source_scope`, `supplement_dir`, `output_docx`, and `zotero.collection_name`. Boolean false is a valid supplied answer. Date/source fields may explicitly state no additional restriction. Record the user decision rather than infer it from absent values.
 
+New tasks use `schema_version=2` and also require confirmed `execution_policy.allow_subagents` (a JSON boolean) and `execution_policy.revision_mode` (`until_pass` or `bounded`). Their initial `null` values mean unanswered, not permission. `until_pass` requires `max_revisions=null`; `bounded` requires a non-negative JSON integer, defaulting to 2 when no different bound is supplied. Version 1 tasks with no execution policy retain bounded behavior with the legacy default of two revisions; absence never authorizes delegation. Reuse explicit session authorization and record its source rather than asking again. Any updated policy must be included in the next immutable task snapshot; it cannot retroactively approve a response bound to different inputs.
+
 Other fields:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task_id": "generated UUID",
   "scope": "related_work",
   "context": "The research setting and terminology",
@@ -38,7 +40,8 @@ Other fields:
   "outline": [{"title": "1 Theme", "budget": 400, "reference_ids": ["R001"], "argument": "Compare the methods supporting this claim"}],
   "author_materials": [],
   "model": "deepseek-v4-flash",
-  "max_revisions": 2
+  "execution_policy": {"allow_subagents": true, "revision_mode": "until_pass"},
+  "max_revisions": null
 }
 ```
 
@@ -85,7 +88,7 @@ Codex writes a semantic review after checking each claim against the referenced 
 }
 ```
 
-A passing semantic review uses `passed=true, issues=[]`; `passed` must be a JSON boolean, with its hash matching the immutable body. Source checks, import/readback checks, mechanical audit, exact count and semantic approval are distinct gates. After the bounded revision budget is exhausted, save all attempts, report the concrete remaining issues, and request the user's next instruction.
+A passing semantic review uses `passed=true, issues=[]`; `passed` must be a JSON boolean, with its hash matching the immutable body. Source checks, import/readback checks, mechanical audit, exact count and semantic approval are distinct gates. Only a confirmed bounded revision budget stops work because of content-revision count. An authorized `until_pass` task continues without asking again at a fixed count. Missing evidence, service failures, conflicting requirements and explicit user budgets remain separate constraints; preserve the current attempts and report the actual blocker rather than labelling it a revision limit.
 
 ## Model transport
 

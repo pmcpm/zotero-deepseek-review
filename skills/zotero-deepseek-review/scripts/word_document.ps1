@@ -1,22 +1,33 @@
-param([Parameter(Mandatory=$true)][string]$TaskDir,[Parameter(Mandatory=$true)][string]$PythonPath,[Parameter(Mandatory=$true)][string]$StyleID,[string]$ProfilePath,[string]$TemplatePath)
+param([Parameter(Mandatory=$true)][string]$TaskDir,[Parameter(Mandatory=$true)][string]$PythonPath,[Parameter(Mandatory=$true)][string]$StyleID,[string]$ProfilePath,[string]$TemplatePath,[string]$StylePath)
 $ErrorActionPreference='Stop'
 $scripts=Split-Path -Parent $PSCommandPath
+. (Join-Path $scripts 'word_formatting.ps1')
 $taskRoot=(Resolve-Path -LiteralPath $TaskDir).Path
 $task=Get-Content -LiteralPath (Join-Path $taskRoot 'task.json') -Raw|ConvertFrom-Json
 $latinFont=$task.formatting.body_font;if($task.formatting.latin_font){$latinFont=$task.formatting.latin_font}
 $output=[IO.Path]::GetFullPath($task.output_docx)
 if(Test-Path -LiteralPath $output){throw 'Output already exists; choose a new filename to preserve user edits'}
 $profileArgs=@();if($ProfilePath){$profileArgs=@('--profile',$ProfilePath)}
+if(-not $StylePath){
+  foreach($candidate in Get-ChildItem -LiteralPath $taskRoot -Filter '*.csl' -File){
+    [xml]$styleXML=Get-Content -LiteralPath $candidate.FullName -Raw
+    if($styleXML.SelectSingleNode("/*[local-name()='style']/*[local-name()='info']/*[local-name()='id']").InnerText -eq $StyleID){$StylePath=$candidate.FullName;break}
+  }
+}
+if(-not $StylePath){throw 'Provide -StylePath with the actual installed task CSL for citation-format validation'}
+$StylePath=(Resolve-Path -LiteralPath $StylePath).Path
+[xml]$selectedStyleXML=Get-Content -LiteralPath $StylePath -Raw
+if($selectedStyleXML.SelectSingleNode("/*[local-name()='style']/*[local-name()='info']/*[local-name()='id']").InnerText -ne $StyleID){throw 'StylePath CSL ID does not match StyleID'}
 & $PythonPath (Join-Path $scripts 'prepare_note.py') $taskRoot @profileArgs
 if($LASTEXITCODE -ne 0){throw 'Approved draft and live metadata gate failed'}
 $plan=Get-Content -LiteralPath (Join-Path $taskRoot 'word\note-plan.json') -Raw|ConvertFrom-Json
 $app=$null;$doc=$null;$ownedInstance=$false
 $report=[ordered]@{input_synthesis=$false;body_sha256=$plan.body_sha256;style_id=$StyleID;output_docx=$output}
-function BridgeCommand($op){
+function BridgeCommand($op,$phase=$op){
   $request=[ordered]@{op=$op;taskID=$task.task_id;requestID=([guid]::NewGuid().ToString('N'));documentPath=$doc.FullName}
   if($op -eq 'configureDocument'){$request.styleID=$StyleID;$request.locale='zh-CN'}
   if($op -eq 'insertNote'){$request.noteKey=$plan.note_key}
-  $path=Join-Path $taskRoot ('word\'+$op+'.request.json');$response=Join-Path $taskRoot ('word\'+$op+'.response.json')
+  $path=Join-Path $taskRoot ('word\'+$phase+'.request.json');$response=Join-Path $taskRoot ('word\'+$phase+'.response.json')
   if(Test-Path -LiteralPath $path){
     $prior=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json
     if($prior.op -ne $op -or $prior.taskID -ne $task.task_id -or $prior.documentPath -ne $doc.FullName){throw 'Saved command belongs to another document; inspect recovery state'}
@@ -28,6 +39,12 @@ function BridgeCommand($op){
   $result=Get-Content -LiteralPath $response -Raw|ConvertFrom-Json
   if(-not $result.result.ok){throw ('Native Zotero command failed: '+$op)}
   $doc.Save()
+}
+function SaveFormatStage($stage){
+  $formatReport=Get-CodexWordFormatReport $doc $plan $bodyFormat $stage
+  $path=Join-Path $taskRoot ('word\format-'+$stage+'.json')
+  $formatReport|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $path -Encoding utf8
+  return $path
 }
 function CitationFreeBody($end){
   $cursor=0;$text=''
@@ -46,6 +63,8 @@ try {
   $ownedInstance=$true;$app.Visible=$false
   if($TemplatePath){$doc=$app.Documents.Add([IO.Path]::GetFullPath($TemplatePath))}else{$doc=$app.Documents.Add()}
   if($doc.Content.Text.Trim().Length -gt 0 -or $doc.Fields.Count -gt 0){throw 'Use an empty formatting template; existing manuscript requires a separate scoped edit'}
+  # Copied formatting templates may retain the source document's Zotero session. Clear only this new, empty document's preferences.
+  for($i=$doc.CustomDocumentProperties.Count;$i -ge 1;$i--){if($doc.CustomDocumentProperties.Item($i).Name -like 'ZOTERO_PREF_*'){$doc.CustomDocumentProperties.Item($i).Delete()}}
   if(-not $TemplatePath){
     $doc.PageSetup.PageWidth=$app.CentimetersToPoints(21);$doc.PageSetup.PageHeight=$app.CentimetersToPoints(29.7)
     foreach($side in @('TopMargin','BottomMargin','LeftMargin','RightMargin')){$doc.PageSetup.$side=$app.CentimetersToPoints($task.formatting.margin_cm)}
@@ -57,20 +76,20 @@ try {
     $heading.ParagraphFormat.FirstLineIndent=0;$heading.ParagraphFormat.KeepWithNext=$true
     $heading.ParagraphFormat.SpaceBefore=12;$heading.ParagraphFormat.SpaceAfter=6
   }
+  $bodyFormat=Get-CodexBodyFormat $doc
+  $report.body_format=$bodyFormat
   $doc.SaveAs2($output,16)
   BridgeCommand 'configureDocument'
   $doc.Range(0,0).Select();BridgeCommand 'insertNote'
+  SaveFormatStage 'inserted'|Out-Null
   $end=$doc.Content.End-1
   $doc.Range($end,$end).InsertBefore("`r参考文献`r")
-  $headingRange=$doc.Content.Duplicate
-  if(-not $headingRange.Find.Execute('参考文献')){throw 'Bibliography heading missing'}
+  $headingRange=$doc.Range($end+1,$end+5)
+  if($headingRange.Text -ne '参考文献'){throw 'Bibliography heading missing at the appended position'}
   $doc.Bookmarks.Add('CodexBibliographyHeading',$headingRange)|Out-Null
   $doc.Range($doc.Content.End-1,$doc.Content.End-1).Select();BridgeCommand 'addBibliography'
-  foreach($paragraph in $doc.Paragraphs){
-    $text=$paragraph.Range.Text.Trim()
-    if($plan.headings -contains $text -or $text -eq '参考文献'){$paragraph.Range.Style=$doc.Styles.Item(-2)}
-    elseif($paragraph.Range.Start -lt $doc.Bookmarks.Item('CodexBibliographyHeading').Range.Start){$paragraph.Range.Style=$doc.Styles.Item(-1)}
-  }
+  Set-CodexBodyFormatting $doc $plan $bodyFormat
+  $doc.Bookmarks.Item('CodexBibliographyHeading').Range.Style=$doc.Styles.Item(-2)
   $bib=@($doc.Fields|Where-Object {$_.Code.Text -like '*ZOTERO_BIBL*'})
   if($bib.Count -ne 1){throw 'Expected one native bibliography'}
   if($TemplatePath){
@@ -86,6 +105,11 @@ try {
   for($i=$doc.Paragraphs.Count;$i -ge 1;$i--){$p=$doc.Paragraphs.Item($i);if($p.Range.Start -lt $doc.Bookmarks.Item('CodexBibliographyHeading').Range.Start -and $p.Range.Text.Trim().Length -eq 0 -and $p.Range.Fields.Count -eq 0){$p.Range.Delete()|Out-Null}}
   $doc.Content.Font.Color=0
   foreach($name in @('Hyperlink','FollowedHyperlink')){try{$doc.Styles.Item($name).Font.Color=0}catch{}}
+  SaveFormatStage 'formatted'|Out-Null
+  # Native CSL rendering owns superscript/baseline. No blanket character/style changes after this refresh.
+  Reset-CodexNativeCitationCache $doc $PythonPath $scripts $taskRoot 'formatted'
+  BridgeCommand 'refreshDocument' 'refresh-formatted'
+  SaveFormatStage 'refreshed'|Out-Null
   $plain=[IO.File]::ReadAllText($plan.body_path,[Text.Encoding]::UTF8)
   $expected=[regex]::Replace([regex]::Replace($plain,'\[\[R\d{3,}\]\]',''),'\s','')
   $actual=CitationFreeBody $doc.Bookmarks.Item('CodexBibliographyHeading').Range.Start
@@ -99,11 +123,15 @@ try {
   $report.text=$doc.Content.Text
   $doc.Save();$doc.Close(0);$doc=$null
   $doc=$app.Documents.Open($output,$false,$false)
-  BridgeCommand 'refreshDocument'
-  $refreshedBibliography=@($doc.Fields|Where-Object {$_.Code.Text -like '*ZOTERO_BIBL*'})
-  $refreshedBibliography[0].Result.Style=$doc.Styles.Item($referenceStyleName)
-  if(-not $TemplatePath){$refreshedBibliography[0].Result.ParagraphFormat.Alignment=0}
-  $doc.Content.Font.Color=0;$doc.Save()
+  Reset-CodexNativeCitationCache $doc $PythonPath $scripts $taskRoot 'reopened'
+  BridgeCommand 'refreshDocument' 'refresh-reopened'
+  $finalFormat=SaveFormatStage 'final'
+  $doc.Save()
+  $nativeAudit=Join-Path $taskRoot 'word\native-field-audit.json'
+  $auditArgs=@((Join-Path $scripts 'audit_docx.py'),$output,'--output',$nativeAudit,'--expected-citations',[string]$plan.citation_clusters,'--style-id',$StyleID,'--task',(Join-Path $taskRoot 'task.json'),'--style-path',$StylePath,'--word-report',$finalFormat)
+  if($task.hide_doi){$auditArgs+='--hide-doi'}
+  & $PythonPath @auditArgs
+  if($LASTEXITCODE -ne 0){throw 'Effective body font or native citation-format validation failed; inspect native-field-audit.json'}
   $doc.ExportAsFixedFormat((Join-Path $taskRoot 'word\preview.pdf'),17)
   $report.reopen_fields=$doc.Fields.Count
   $report.prose_matches_after_refresh=(CitationFreeBody $doc.Bookmarks.Item('CodexBibliographyHeading').Range.Start) -eq $expected

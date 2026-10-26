@@ -28,6 +28,8 @@ class WorkflowTests(unittest.TestCase):
             "supplement_dir": str(self.root / "supplements"), "output_docx": str(self.root / "output.docx"),
             "zotero": {"library_id": 1, "collection_key": "C001", "collection_name": "研究测试"},
             "outline": [{"title": "1 研究进展", "budget": 200, "reference_ids": ["R001"], "argument": "比较证据A支持的方法路径"}],
+            "execution_policy": {"allow_subagents": False, "revision_mode": "bounded"},
+            "max_revisions": 2,
         }
         w.init_task(self.root, self.task)
         self.task = w.load(self.root / "task.json")
@@ -68,6 +70,118 @@ class WorkflowTests(unittest.TestCase):
         result = w.check_task(self.task)
         self.assertEqual(result["missing"], ["word_limit"])
         self.assertNotIn("hide_doi", result["missing"])
+
+    def test_new_task_requires_upfront_execution_decisions(self):
+        supplied = copy.deepcopy(self.task)
+        supplied.pop("execution_policy")
+        result = w.init_task(self.root / "unanswered", supplied)
+        self.assertEqual(w.load(self.root / "unanswered/task.json")["schema_version"], 2)
+        self.assertEqual(result["missing"], ["execution_policy.allow_subagents", "execution_policy.revision_mode"])
+        self.assertFalse(result["ready"])
+
+    def test_existing_explicit_authorization_and_refusal_are_not_missing(self):
+        for allowed in (False, True):
+            with self.subTest(allow_subagents=allowed):
+                task = copy.deepcopy(self.task)
+                task["execution_policy"] = {"allow_subagents": allowed, "revision_mode": "until_pass"}
+                task["max_revisions"] = None
+                task["decision_record"] = {"execution_policy": "User explicitly selected these options in this conversation"}
+                result = w.check_task(task)
+                self.assertTrue(result["ready"], result)
+                self.assertEqual(result["missing"], [])
+                self.assertEqual(w.execution_policy(task)["allow_subagents"], allowed)
+                self.assertIsNone(w.revision_limit(task))
+
+    def test_execution_policy_validation_does_not_override_a_finite_limit(self):
+        variants = [
+            ({"allow_subagents": "yes", "revision_mode": "bounded"}, 2),
+            ({"allow_subagents": False, "revision_mode": "unknown"}, 2),
+            ({"allow_subagents": False, "revision_mode": "until_pass"}, 2),
+            ({"allow_subagents": False, "revision_mode": "bounded"}, None),
+            ({"allow_subagents": False, "revision_mode": "bounded"}, -1),
+            ({"allow_subagents": False, "revision_mode": "bounded"}, True),
+            ("not-an-object", 2),
+        ]
+        for policy, limit in variants:
+            with self.subTest(policy=policy, max_revisions=limit):
+                task = {**self.task, "execution_policy": policy, "max_revisions": limit}
+                result = w.check_task(task)
+                self.assertFalse(result["ready"])
+                self.assertTrue(result["issues"])
+        for schema in (True, 0, 3, "2"):
+            with self.subTest(schema=schema):
+                self.assertFalse(w.check_task({**self.task, "schema_version": schema})["ready"])
+
+    def test_legacy_task_keeps_bounded_two_revision_default_and_no_delegation(self):
+        task = copy.deepcopy(self.task)
+        task["schema_version"] = 1
+        task.pop("execution_policy")
+        task.pop("max_revisions")
+        self.assertTrue(w.check_task(task)["ready"])
+        self.assertEqual(w.execution_policy(task), {"allow_subagents": False, "revision_mode": "bounded"})
+        self.assertEqual(w.revision_limit(task), 2)
+        w.save(self.root / "task.json", task)
+        state = w.write_draft(self.root, self.mocks(["不代表[[R999]]。"] * 3))
+        self.assertEqual(state["reason"], "revision_limit")
+        self.assertEqual(len(list((self.root / "writing").glob("attempt-*"))), 3)
+
+    def test_until_pass_continues_past_two_revisions_and_keeps_provenance(self):
+        self.task["execution_policy"] = {"allow_subagents": True, "revision_mode": "until_pass"}
+        self.task["max_revisions"] = None
+        w.save(self.root / "task.json", self.task)
+        bad = "不代表[[R999]]。"
+        good = "1 研究进展\n已有研究采用方法A[[R001]]。"
+        mock = self.mocks([bad] * 4 + [good])
+        state = w.write_draft(self.root, mock)
+        self.assertEqual(state["attempt"], 4)
+        self.assertEqual(state["phase"], "awaiting_exact_count_and_semantic_review")
+        for index, expected in enumerate([bad] * 4 + [good]):
+            attempt = self.root / f"writing/attempt-{index:02}"
+            self.assertEqual((attempt / "body.txt").read_bytes(), expected.encode("utf8"))
+            manifest = w.load(attempt / "manifest.json")
+            self.assertEqual(manifest["body_sha256"], w.digest(expected))
+            self.assertEqual(manifest["task_sha256"], w.digest(self.task))
+            self.assertTrue((attempt / "raw.json").exists())
+        review, count = self.approve_files(good)
+        selected = w.review_draft(self.root, review, count, mock)
+        self.assertEqual(selected["attempt"], 4)
+        self.assertEqual(w.load_selected(self.root, allow_simulation=True)["body_sha256"], w.digest(good))
+
+    def test_bounded_mode_accepts_larger_explicit_limit(self):
+        self.task["max_revisions"] = 4
+        self.assertTrue(w.check_task(self.task)["ready"])
+        w.save(self.root / "task.json", self.task)
+        state = w.write_draft(self.root, self.mocks(["不代表[[R999]]。"] * 5))
+        self.assertEqual(state["reason"], "revision_limit")
+        self.assertEqual(len(list((self.root / "writing").glob("attempt-*"))), 5)
+        self.assertFalse((self.root / "selected.json").exists())
+
+    def test_until_pass_semantic_reviews_continue_beyond_two_revisions(self):
+        self.task["execution_policy"] = {"allow_subagents": False, "revision_mode": "until_pass"}
+        self.task["max_revisions"] = None
+        w.save(self.root / "task.json", self.task)
+        bodies = [f"1 研究进展\n已有研究采用方法A，证据范围{'明确' * (i + 1)}[[R001]]。" for i in range(4)]
+        mock = self.mocks(bodies)
+        w.write_draft(self.root, mock)
+        review = self.root / "review.json"
+        for index in range(3):
+            w.save(review, {"body_sha256": w.digest(bodies[index]), "passed": False,
+                            "issues": [{"reference_id": "R001", "location": "正文", "problem": "进一步核对研究对象与证据范围"}]})
+            state = w.review_draft(self.root, review, mock=mock)
+            self.assertEqual(state["attempt"], index + 1)
+            self.assertEqual(state["phase"], "awaiting_exact_count_and_semantic_review")
+        review, count = self.approve_files(bodies[-1])
+        selected = w.review_draft(self.root, review, count, mock)
+        self.assertEqual(selected["attempt"], 3)
+        for index in range(3):
+            self.assertEqual(len(list((self.root / f"writing/attempt-{index:02}").glob("semantic-review-*.json"))), 1)
+
+    def test_attempt_numbers_are_numeric_and_do_not_reuse_history_gaps(self):
+        self.assertEqual(w.next_attempt(self.root), 0)
+        for index in (0, 9, 99, 100):
+            (self.root / f"writing/attempt-{index:02}").mkdir(parents=True)
+        self.assertEqual(w.next_attempt(self.root), 101)
+        self.assertEqual(w.latest_attempt(self.root).name, "attempt-100")
 
     def test_stable_ids_and_doi_dedup(self):
         cards = [{"reference_id": "R009"}, {}, {"reference_id": "R002"}]
